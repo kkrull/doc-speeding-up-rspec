@@ -1,4 +1,34 @@
 # Speeding up RSpec in `ascent-web`
+## On the hunt for slow tests
+
+Which tests are slow?  Profiling all 2278 RSpec examples (`rspec --profile
+2278`), there are only a couple that are significantly slower than the rest.
+
+![RSpec example times](rspec-example-times.png "RSpec example times")
+
+In other words, fixing a few slow tests is not going to have much of an impact.
+*All* of the tests are slow.
+
+### It's got to be Rails...right?
+
+RSpec listed `./spec/lib/batches/batch_filter_spec.rb:35` as fastest example at 0.017 seconds.
+
+**So why does it take 11.6 seconds to run that test by itself?**
+
+I had a couple of ideas that were dead ends:
+
+1. Tests that don't `require 'spec_helper'` run faster.  If you do use `spec_helper`, it loads Rails and Rails autoloads
+   all of our code (see `config/application.rb`).  Disabling for the test environment breaks a bunch of tests, and it
+   turns out that [Rails autoloading can be
+   complicated](http://urbanautomaton.com/blog/2013/08/27/rails-autoloading-hell/).
+2. Our `$LOAD_PATH` has over 200 directories in it, which shouldn't be necessary.  I fixed that and fixed the
+   `require` statments that were off, but that didn't improve the time any.
+
+The penalty is a one-time, startup penalty anyway.  It's agonizing when running a single test, but it doesn't have a
+great impact on the overall test suite.  [Spork](https://github.com/sporkrb/spork),
+[Zeus](https://github.com/burke/zeus) and [Spin](https://github.com/jstorimer/spin) exist to ease this burden by
+pre-loading Rails, but they add some configuration burden and can lead to incorrect test results if you're not careful.
+
 
 ## Testing with Mongo
 ### Keeping test databases in memory
