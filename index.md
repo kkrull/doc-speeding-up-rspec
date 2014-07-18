@@ -29,6 +29,37 @@ great impact on the overall test suite.  [Spork](https://github.com/sporkrb/spor
 [Zeus](https://github.com/burke/zeus) and [Spin](https://github.com/jstorimer/spin) exist to ease this burden by
 pre-loading Rails, but they add some configuration burden and can lead to incorrect test results if you're not careful.
 
+### Application layers
+
+Does one layer of the application take most of the 2+ minutes to run the suite?  Not really:
+
+- 228 controller tests: 11.1s
+- 329 gateway tests: 17.3s
+- 280 interactor tests: 12.3s
+
+### Memory usage?
+
+No, it's not really this either.  The `rspec` process gets as high as 1074M VIRT size.  My machine has a lot more free
+memory than that, so that's not likely to be the issue.
+
+### Profiling helpers
+
+The problem is revealed when you add profiling to each RSpec hook that's running (stop a test in the debugger and look
+at the example class's internals to figure out which hooks are active).  Taking the total time for each file that adds
+some sort of `Before` or `After` hook, I got these total times over the entire test suite spent in each helper:
+
+- `app_config_spec_helper`: 0.603s
+- `capybara`: 0.119s
+- `fabrication_spec_helper`: 0.231s
+- `mongoid_spec_helper`: **48.98s**
+- `rspec-rails`: 0s
+- `spec_helper`: 2.6s
+
+`mongoid_spec_helper` runs a total of **1595 times**, taking 0.031 seconds each time it runs - all by itself!  Running
+all tests that need `mongoid_spec_helper` yields 0.046s per example, vs. 0.013s per example for those that do not need
+to access Mongo. 
+
+So now we have a lead for what's taking so long.
 
 ## Testing with Mongo
 ### Keeping test databases in memory
@@ -38,11 +69,9 @@ external database can be a pain.  Some databases offer a [memory-only
 mode](http://hsqldb.org/doc/guide/ch01.html#N101CA) when you can't (or don't
 want to) break the dependency on the database.
 
-I did some searching for ways to get MongoDB to run this way, and I didn't find
-anything quite like that.  You can, however, run `mongodb` in a RAM disk
-([download more](http://www.downloadmoreram.com/) if you're running low) and
-get a reasonable performance improvement.  My tests ran 28% faster when I did
-the following:
+I did some searching for ways to get MongoDB to run this way, and I didn't find anything quite like that.  You can,
+however, run `mongodb` in a RAM disk ([download more](http://www.downloadmoreram.com/) if you're running low) and get a
+reasonable performance improvement.  My tests ran **28% faster** when I did the following:
 
 ```sh
 $ mount -o size=1G -t tmpfs none /mnt/tmpfs
@@ -63,6 +92,8 @@ In case anyone is running RSpec in development or production environments (i.e.
 environment.  Note that tests requiring `mongoid_spec_helper` default to the
 test environment.  You don't have to do anything special to get fast
 performance.
+
+When you do this, you only spend **8.9s** in `mongoid_spec_helper` over the life of the test suite.
 
 ```ruby 
 # spec/mongoid_spec_helper.rb
@@ -94,7 +125,7 @@ redirected its output.  The `progress` formatter seems to flush `$stdout` for
 each dot.
 
 Running `bundle exec rspec --out <file> ...` does the trick, but it also makes
-you go through another stop of loooking at the file when you want to see
+you go through another stop of looking at the file when you want to see
 results.  I created `script/rspec` to automate the process of running the specs
 and looking at the file.
 
@@ -121,6 +152,8 @@ to get a progress bar, while maintaining the increased speed.
 
 ## Results
 
+At the end of the day, here are the improvements that I applied.
+
 | Changes | Process time | RSpec time |
 | :----   | ----:        | ----:      |
 | None | 2m21s | 2m11s |
@@ -128,3 +161,13 @@ to get a progress bar, while maintaining the increased speed.
 | Redirection + `Mongoid.purge!` | 1m3s | 45s |
 
 Overall, that's a **55% improvement**.
+
+### Thoughts ahead
+
+At the time of this writing, we had **1330 examples that load `mongoid_spec_helper`**.  That's more tests relying on
+Mongo than not, and we only have a handful (23) of gateway classes (where you often do want to test I/O with Mongo).
+This suggests that there are some tests out there that - perhaps indirectly - gain access to Mongo when they don't need
+to.
+
+Each example that can access Mongo takes extra time, so be sure you're breaking dependencies with good engineering
+practices when it's practical to do so.
